@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import "./styles.css";
 import { marked } from "marked";
 
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = "https://YOUR-RENDER-BACKEND.onrender.com";
 
 function App() {
   const [messages, setMessages] = useState([]);
