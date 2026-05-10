@@ -1,17 +1,14 @@
-# app.py — FastAPI backend server
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
-import uvicorn
 import os
 
 app = FastAPI(title="Python Tutor Bot")
 
-# ─── CORS ─────────────────────────────────────────────
+# ───────────────── CORS ─────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,15 +17,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── OPTIONAL DB (SAFE IMPORT) ────────────────────────
+# ───────────────── DB SAFE ─────────────────
 try:
     from db import conn, cursor
     DB_ENABLED = True
-except Exception as e:
-    print("DB DISABLED:", e)
+except:
     DB_ENABLED = False
+    conn = None
+    cursor = None
 
-# ─── MODEL (LAZY LOAD SAFE) ───────────────────────────
+# ───────────────── MODEL SAFE LOAD ─────────────────
 tutor_instance = None
 
 def load_model(use_lora=True):
@@ -36,14 +34,13 @@ def load_model(use_lora=True):
         from model import get_model
         return get_model(use_lora=use_lora)
     except Exception as e:
-        print("MODEL LOAD ERROR:", e)
+        print("MODEL ERROR:", e)
         return None
 
-# ─── FRONTEND (SAFE PATH) ─────────────────────────────
+# ───────────────── FRONTEND ─────────────────
 BASE_DIR = os.path.dirname(__file__)
 FRONTEND_DIR = os.path.join(BASE_DIR, "..", "frontend", "build")
-
-index_path = os.path.join(FRONTEND_DIR, "index.html")
+INDEX_FILE = os.path.join(FRONTEND_DIR, "index.html")
 
 if os.path.exists(FRONTEND_DIR):
     app.mount(
@@ -52,7 +49,7 @@ if os.path.exists(FRONTEND_DIR):
         name="static"
     )
 
-# ─── MODELS ───────────────────────────────────────────
+# ───────────────── MODELS ─────────────────
 class Message(BaseModel):
     role: str
     content: str
@@ -62,77 +59,78 @@ class ChatRequest(BaseModel):
     history: Optional[list[Message]] = []
     use_lora: Optional[bool] = True
 
-class ChatResponse(BaseModel):
-    response: str
-    history: list[Message]
-
-# ─── ROUTES ───────────────────────────────────────────
+# ───────────────── ROUTES ─────────────────
 
 @app.get("/")
-def serve_frontend():
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {"message": "Backend is running"}
+def home():
+    if os.path.exists(INDEX_FILE):
+        return FileResponse(INDEX_FILE)
+    return {"status": "backend running", "message": "frontend not found"}
 
 @app.get("/health")
 def health():
-    return {
-        "status": "ok",
-        "db": DB_ENABLED
-    }
+    return {"status": "ok"}
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat")
 def chat(req: ChatRequest):
     global tutor_instance
 
     try:
+        # load model only once
         if tutor_instance is None:
             tutor_instance = load_model(req.use_lora)
 
+        # fallback if model not loaded
         if tutor_instance is None:
-            return ChatResponse(
-                response="Model not loaded properly.",
-                history=[]
-            )
+            return {
+                "response": "Model not loaded. Please check server logs.",
+                "history": []
+            }
 
-        # Convert history
-        history = []
-        for m in req.history or []:
-            history.append({"role": m.role, "content": m.content})
+        # convert history safely
+        history = [
+            {"role": m.role, "content": m.content}
+            for m in (req.history or [])
+        ]
 
-        # Generate response
-        response = tutor_instance.generate(req.message, history)
+        # generate response
+        try:
+            response = tutor_instance.generate(req.message, history)
+        except Exception as e:
+            print("MODEL GENERATION ERROR:", e)
+            response = "Error generating response."
 
         if not response:
-            response = "Empty response from model."
+            response = "Empty response."
 
-        # Save to DB safely
+        # DB safe save
         if DB_ENABLED:
             try:
                 cursor.execute(
                     "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
                     ("user1", "user", req.message)
                 )
-
                 cursor.execute(
                     "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
                     ("user1", "assistant", response)
                 )
-
                 conn.commit()
-
-            except Exception as db_error:
-                print("DB ERROR:", db_error)
+            except Exception as e:
+                print("DB ERROR:", e)
                 conn.rollback()
 
-        history.append({"role": "user", "content": req.message})
-        history.append({"role": "assistant", "content": response})
-
-        return ChatResponse(response=response, history=history)
+        return {
+            "response": response,
+            "history": history + [
+                {"role": "user", "content": req.message},
+                {"role": "assistant", "content": response}
+            ]
+        }
 
     except Exception as e:
         print("CHAT ERROR:", e)
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/history")
 def history():
@@ -140,17 +138,10 @@ def history():
         return []
 
     try:
-        cursor.execute(
-            "SELECT role, content FROM messages ORDER BY created_at"
-        )
+        cursor.execute("SELECT role, content FROM messages ORDER BY created_at")
         rows = cursor.fetchall()
-
         return [{"role": r[0], "content": r[1]} for r in rows]
 
     except Exception as e:
         print("HISTORY ERROR:", e)
         return []
-
-# ─── LOCAL RUN ────────────────────────────────────────
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
