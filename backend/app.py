@@ -21,15 +21,13 @@ app = FastAPI(title="Python Tutor Bot ")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True, 
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Serve the frontend
-FRONTEND_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "frontend")
-)
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
 
 print("FRONTEND PATH:", FRONTEND_DIR)
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
@@ -52,6 +50,7 @@ class ChatResponse(BaseModel):
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
+
 @app.get("/")
 def serve_frontend():
     index_path = os.path.join(FRONTEND_DIR, "index.html")
@@ -84,7 +83,7 @@ def chat(req: ChatRequest):
         if not response:
             response = "Model returned empty response."
 
-        # Save to DB (single commit = faster)
+        # Save to DB
         try:
             cursor.execute(
                 "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
@@ -113,7 +112,7 @@ def chat(req: ChatRequest):
     except Exception as e:
         print("ERROR:", e)
         raise HTTPException(status_code=500, detail=str(e))
-        
+
 @app.get("/history")
 def history():
     cursor.execute(
