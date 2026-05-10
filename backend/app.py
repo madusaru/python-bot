@@ -6,18 +6,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
-from db import conn, cursor
 import uvicorn
 import os
 
-from model import get_model
-
-# Load model once
-tutor_instance = None
-
 app = FastAPI(title="Python Tutor Bot")
 
-# Allow frontend to talk to backend
+# ─── CORS ─────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,24 +20,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve React frontend build
-FRONTEND_DIR = os.path.join(
-    os.path.dirname(__file__),
-    "..",
-    "frontend",
-    "build"
-)
+# ─── OPTIONAL DB (SAFE IMPORT) ────────────────────────
+try:
+    from db import conn, cursor
+    DB_ENABLED = True
+except Exception as e:
+    print("DB DISABLED:", e)
+    DB_ENABLED = False
 
-print("FRONTEND PATH:", FRONTEND_DIR)
+# ─── MODEL (LAZY LOAD SAFE) ───────────────────────────
+tutor_instance = None
 
-app.mount(
-    "/static",
-    StaticFiles(directory=os.path.join(FRONTEND_DIR, "static")),
-    name="static"
-)
+def load_model(use_lora=True):
+    try:
+        from model import get_model
+        return get_model(use_lora=use_lora)
+    except Exception as e:
+        print("MODEL LOAD ERROR:", e)
+        return None
 
-# ─── Request / Response Models ───────────────────────────────────────────────
+# ─── FRONTEND (SAFE PATH) ─────────────────────────────
+BASE_DIR = os.path.dirname(__file__)
+FRONTEND_DIR = os.path.join(BASE_DIR, "..", "frontend", "build")
 
+index_path = os.path.join(FRONTEND_DIR, "index.html")
+
+if os.path.exists(FRONTEND_DIR):
+    app.mount(
+        "/static",
+        StaticFiles(directory=os.path.join(FRONTEND_DIR, "static")),
+        name="static"
+    )
+
+# ─── MODELS ───────────────────────────────────────────
 class Message(BaseModel):
     role: str
     content: str
@@ -57,17 +66,20 @@ class ChatResponse(BaseModel):
     response: str
     history: list[Message]
 
-# ─── Routes ──────────────────────────────────────────────────────────────────
+# ─── ROUTES ───────────────────────────────────────────
 
 @app.get("/")
 def serve_frontend():
-    return FileResponse(
-        os.path.join(FRONTEND_DIR, "index.html")
-    )
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "Backend is running"}
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": "PythonTutorBot"}
+    return {
+        "status": "ok",
+        "db": DB_ENABLED
+    }
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
@@ -75,73 +87,70 @@ def chat(req: ChatRequest):
 
     try:
         if tutor_instance is None:
-            tutor_instance = get_model(use_lora=req.use_lora)
+            tutor_instance = load_model(req.use_lora)
+
+        if tutor_instance is None:
+            return ChatResponse(
+                response="Model not loaded properly.",
+                history=[]
+            )
 
         # Convert history
         history = []
-
-        if req.history:
-            for m in req.history:
-                history.append({
-                    "role": m.role,
-                    "content": m.content
-                })
+        for m in req.history or []:
+            history.append({"role": m.role, "content": m.content})
 
         # Generate response
         response = tutor_instance.generate(req.message, history)
 
         if not response:
-            response = "Model returned empty response."
+            response = "Empty response from model."
 
-        # Save to DB
-        try:
-            cursor.execute(
-                "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
-                ("user1", "user", req.message)
-            )
+        # Save to DB safely
+        if DB_ENABLED:
+            try:
+                cursor.execute(
+                    "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
+                    ("user1", "user", req.message)
+                )
 
-            cursor.execute(
-                "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
-                ("user1", "assistant", response)
-            )
+                cursor.execute(
+                    "INSERT INTO messages (session_id, role, content) VALUES (%s, %s, %s)",
+                    ("user1", "assistant", response)
+                )
 
-            conn.commit()
+                conn.commit()
 
-        except Exception as db_error:
-            print("DB ERROR:", db_error)
-            conn.rollback()
+            except Exception as db_error:
+                print("DB ERROR:", db_error)
+                conn.rollback()
 
-        history.append({
-            "role": "user",
-            "content": req.message
-        })
+        history.append({"role": "user", "content": req.message})
+        history.append({"role": "assistant", "content": response})
 
-        history.append({
-            "role": "assistant",
-            "content": response
-        })
-
-        return ChatResponse(
-            response=response,
-            history=history
-        )
+        return ChatResponse(response=response, history=history)
 
     except Exception as e:
-        print("ERROR:", e)
+        print("CHAT ERROR:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/history")
 def history():
-    cursor.execute(
-        "SELECT role, content FROM messages ORDER BY created_at"
-    )
+    if not DB_ENABLED:
+        return []
 
-    rows = cursor.fetchall()
+    try:
+        cursor.execute(
+            "SELECT role, content FROM messages ORDER BY created_at"
+        )
+        rows = cursor.fetchall()
 
-    return [
-        {"role": r[0], "content": r[1]}
-        for r in rows
-    ]
+        return [{"role": r[0], "content": r[1]} for r in rows]
 
+    except Exception as e:
+        print("HISTORY ERROR:", e)
+        return []
+
+# ─── LOCAL RUN ────────────────────────────────────────
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
