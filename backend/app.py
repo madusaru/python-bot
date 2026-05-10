@@ -15,7 +15,7 @@ from model import get_model
 # Load model once
 tutor_instance = None
 
-app = FastAPI(title="Python Tutor Bot ")
+app = FastAPI(title="Python Tutor Bot")
 
 # Allow frontend to talk to backend
 app.add_middleware(
@@ -26,17 +26,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve the frontend
-FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
+# Serve React frontend build
+FRONTEND_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "frontend",
+    "build"
+)
 
 print("FRONTEND PATH:", FRONTEND_DIR)
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(FRONTEND_DIR, "static")),
+    name="static"
+)
 
 # ─── Request / Response Models ───────────────────────────────────────────────
 
 class Message(BaseModel):
-    role: str   # "user" or "assistant"
+    role: str
     content: str
 
 class ChatRequest(BaseModel):
@@ -48,13 +57,13 @@ class ChatResponse(BaseModel):
     response: str
     history: list[Message]
 
-
 # ─── Routes ──────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def serve_frontend():
-    index_path = os.path.join(FRONTEND_DIR, "index.html")
-    return FileResponse(index_path)
+    return FileResponse(
+        os.path.join(FRONTEND_DIR, "index.html")
+    )
 
 @app.get("/health")
 def health():
@@ -70,6 +79,7 @@ def chat(req: ChatRequest):
 
         # Convert history
         history = []
+
         if req.history:
             for m in req.history:
                 history.append({
@@ -101,8 +111,15 @@ def chat(req: ChatRequest):
             print("DB ERROR:", db_error)
             conn.rollback()
 
-        history.append({"role": "user", "content": req.message})
-        history.append({"role": "assistant", "content": response})
+        history.append({
+            "role": "user",
+            "content": req.message
+        })
+
+        history.append({
+            "role": "assistant",
+            "content": response
+        })
 
         return ChatResponse(
             response=response,
@@ -118,6 +135,7 @@ def history():
     cursor.execute(
         "SELECT role, content FROM messages ORDER BY created_at"
     )
+
     rows = cursor.fetchall()
 
     return [
