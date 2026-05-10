@@ -17,3 +17,8 @@ pydantic>=2.0.0
 
 # Hugging Face auth (needed to download LLaMA-2)
 huggingface_hub>=0.20.0
+
+# Hugging Face auth
+huggingface_hub>=0.20.0
+
+psycopg2-binary>=2.9.0
